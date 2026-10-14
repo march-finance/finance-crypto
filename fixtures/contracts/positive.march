@@ -1,0 +1,10 @@
+mod ValidCrypto do
+  fn lifecycle(l : LedgerJournal.Ledger, c : CryptoEvent.Context, a : CryptoIdentity.Amount, source : LedgerAccount.Account, dest : LedgerAccount.Account) : Result((LedgerJournal.Ledger, LedgerJournal.PostedEntry), CryptoError.Error) do
+    let? e = CryptoEvent.transfer(c, a, source, dest, None)
+    let? v = Result.map_err(LedgerJournal.validate(l, CryptoEvent.draft(e)), fn err -> CryptoError.Ledger(err))
+    Result.map_err(LedgerJournal.post_validated(l, v), fn err -> CryptoError.Ledger(err))
+  end
+  fn precision(a : CryptoIdentity.Asset) do
+    FinanceRounding.power10(CryptoIdentity.precision(a))
+  end
+end

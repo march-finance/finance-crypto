@@ -1,0 +1,3 @@
+mod ForgedFee do
+  fn forge(a : CryptoIdentity.Amount, f : LedgerAccount.Account, e : LedgerAccount.Account) do CryptoFee.FeeValue(CryptoFee.Gas, a, f, e) end
+end

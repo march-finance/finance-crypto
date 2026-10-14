@@ -1,0 +1,3 @@
+mod NegativeCryptoPrecision do
+  fn invalid() do FinanceRounding.power10(-1) end
+end

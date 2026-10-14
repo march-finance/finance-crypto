@@ -1,0 +1,3 @@
+mod ForgedCryptoAsset do
+  fn forge(n : CryptoIdentity.Network, a : FinanceAsset.Asset) do CryptoIdentity.AssetValue(n, CryptoIdentity.Native, None, a) end
+end

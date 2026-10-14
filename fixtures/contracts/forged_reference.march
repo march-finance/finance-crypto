@@ -1,0 +1,3 @@
+mod ForgedReference do
+  fn forge(n : CryptoIdentity.Network) do CryptoReference.ChainReference(n, "tx", "0") end
+end

@@ -1,0 +1,3 @@
+mod ForgedEvent do
+  fn forge(r : CryptoReference.Reference, m : FinanceMetadata.Metadata, d : LedgerEntry.Draft) do CryptoEvent.EventValue(CryptoEvent.Transfer, r, m, d) end
+end

@@ -1,6 +1,6 @@
 # finance-crypto v0.1 design
 
-Status: proposed for review; implementation has not started.
+Status: approved and implemented for v0.1; see README and implementation-progress.md for verification and the March 0.5.0 solver limitation.
 
 ## Purpose and boundary
 

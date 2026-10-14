@@ -1,4 +1,5 @@
 mod CryptoEventTest do
+  needs IO.Clock, IO.Process
   fn context(id : String, event_id : String) do
     CryptoTest.expect(CryptoEvent.context(id, CryptoTest.chain_ref(event_id), "import", 100, 101))
   end

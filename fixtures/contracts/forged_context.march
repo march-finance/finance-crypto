@@ -1,0 +1,3 @@
+mod ForgedContext do
+  fn forge(r : CryptoReference.Reference, m : FinanceMetadata.Metadata) do CryptoEvent.ContextValue("id", r, m) end
+end

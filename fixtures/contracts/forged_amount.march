@@ -1,0 +1,3 @@
+mod ForgedAmount do
+  fn forge(q : FinanceAmount.Quantity) do CryptoIdentity.AmountValue(q, None) end
+end

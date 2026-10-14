@@ -1,0 +1,3 @@
+mod ForgedNetwork do
+  fn forge() do CryptoIdentity.NetworkValue("test", "1") end
+end

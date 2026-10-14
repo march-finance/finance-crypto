@@ -6,20 +6,18 @@ Licensed under the [MIT License](LICENSE).
 
 ## GitHub checkout and CI
 
-Clone the repositories into the same parent directory so Forge's sibling path
-dependencies resolve (finance-crypto is test-only for finance-codec integration):
+Clone this repository and resolve its published dependencies:
 
 ```sh
-git clone https://github.com/march-finance/finance-core.git
-git clone https://github.com/march-finance/finance-ledger.git
 git clone https://github.com/march-finance/finance-crypto.git
 cd finance-crypto
+forge deps
 forge test --seed=42
 ```
 
 GitHub Actions runs on pushes, pull requests and manual dispatches. It installs
 the pinned March 0.5.0 release, checks/builds this package, and runs debug/release
-tests and properties. Dependencies are checked out from their `main` branches.
+tests and properties. Dependencies use published version 0.1.0 with a committed lockfile.
 Compile-time contract checks run with Z3.
 
 Exact, chain-neutral accounting for normalized wallet and exchange events in
@@ -28,10 +26,10 @@ Version 0.1.0; March 0.5.0 is pinned in `.march-version`.
 
 ## Setup
 
-Keep this package beside `finance-core` and `finance-ledger`, as specified by its
-local Forge path dependencies. Run `forge toolchain install v0.5.0` if needed;
+Run `forge deps` to install `finance-core` and `finance-ledger` 0.1.0 from ForgePM.
+Run `forge toolchain install v0.5.0` if needed;
 `forge toolchain which` confirms the resolved compiler. No RPC, network account,
-API key, wallet secret, clock capability, or registry is needed.
+API key, wallet secret, or clock capability is needed at runtime.
 
 | Module | Main operations |
 | --- | --- |

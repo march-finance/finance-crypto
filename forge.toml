@@ -6,5 +6,5 @@ description = "Exact chain-neutral crypto event accounting for March"
 license = "MIT"
 
 [deps]
-finance-core = { path = "../finance-core" }
-finance-ledger = { path = "../finance-ledger" }
+finance-core = "0.1.0"
+finance-ledger = "0.1.0"

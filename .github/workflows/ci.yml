@@ -28,20 +28,6 @@ jobs:
         with:
           path: finance-crypto
           persist-credentials: false
-      - name: Check out finance-core
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: march-finance/finance-core
-          ref: main
-          path: finance-core
-          persist-credentials: false
-      - name: Check out finance-ledger
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: march-finance/finance-ledger
-          ref: main
-          path: finance-ledger
-          persist-credentials: false
       - name: Install native build dependencies and refinement solver
         run: brew install blake3 zstd brotli openssl@3 pkg-config z3 ripgrep
       - name: Install March 0.5.0
@@ -70,6 +56,7 @@ jobs:
           test "$(march --version)" = "march 0.5.0"
       - name: Check and build
         run: |
+          forge deps
           forge check
           forge build --release
       - name: Debug tests and properties

@@ -10,7 +10,13 @@ if [ ! -x "$task_compiler" ]; then
 fi
 task_log=$(mktemp)
 trap 'rm -f "$task_log"' EXIT HUP INT TERM
-export MARCH_LIB_PATH="$task_root/lib:$task_root/../finance-core/lib:$task_root/../finance-ledger/lib"
+task_core_lib="${MARCH_CORE_LIB:-${HOME}/.march/cas/deps/finance-core/0.1.0/lib}"
+task_ledger_lib="${MARCH_LEDGER_LIB:-${HOME}/.march/cas/deps/finance-ledger/0.1.0/lib}"
+if [ ! -d "$task_core_lib" ] || [ ! -d "$task_ledger_lib" ]; then
+  echo "Run forge deps before contract checks (finance-core and finance-ledger 0.1.0 are required)" >&2
+  exit 1
+fi
+export MARCH_LIB_PATH="$task_root/lib:$task_core_lib:$task_ledger_lib"
 "$task_compiler" --check fixtures/contracts/positive.march
 check_rejected() {
   if "$task_compiler" --check "$1" > "$task_log" 2>&1; then

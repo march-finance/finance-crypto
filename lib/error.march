@@ -1,0 +1,3 @@
+mod CryptoError do
+  type Error = InvalidId | InvalidAmount | AssetMismatch | NetworkMismatch | InvalidAccountRole | AccountAlias | InvalidGasAsset | ConflictingAccount | Core(FinanceError.Error) | Ledger(LedgerError.Error)
+end

@@ -1,0 +1,9 @@
+[package]
+name = "finance-crypto"
+version = "0.1.0"
+type = "lib"
+description = "Exact chain-neutral crypto event accounting for March"
+
+[deps]
+finance-core = { path = "../finance-core" }
+finance-ledger = { path = "../finance-ledger" }

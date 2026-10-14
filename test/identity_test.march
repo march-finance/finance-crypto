@@ -1,0 +1,42 @@
+mod CryptoIdentityTest do
+  test "network IDs use unambiguous byte lengths" do
+    let n = CryptoTest.expect(CryptoIdentity.network("test", "1"))
+    assert (CryptoIdentity.network_id(n) == "4:test1:1")
+    assert (CryptoIdentity.component("é") == "2:é")
+    let a = CryptoTest.expect(CryptoIdentity.network("a:b", "c"))
+    let b = CryptoTest.expect(CryptoIdentity.network("a", "b:c"))
+    assert (!CryptoIdentity.same_network(a, b))
+    assert (CryptoIdentity.namespace(n) == "test")
+    assert (CryptoIdentity.network_reference(n) == "1")
+  end
+  test "identity rejects invalid IDs and preserves token spelling" do
+    assert (Result.is_err(CryptoIdentity.network("", "1")))
+    assert (Result.is_err(CryptoIdentity.network("bad id", "1")))
+    assert (!CryptoIdentity.valid_id(string_from_chars([char_from_int(127)])))
+    let n = CryptoTest.expect(CryptoIdentity.network("test", "1"))
+    assert (Result.is_err(CryptoIdentity.token(n, "", 0)))
+    let a = CryptoTest.expect(CryptoIdentity.token(n, "Contract", 0))
+    let b = CryptoTest.expect(CryptoIdentity.token(n, "contract", 0))
+    assert (CryptoIdentity.contract(a) == Some("Contract"))
+    assert (!LedgerAccount.same_asset(CryptoIdentity.core_asset(a), CryptoIdentity.core_asset(b)))
+    let other = CryptoTest.expect(CryptoIdentity.network("test", "2"))
+    let c = CryptoTest.expect(CryptoIdentity.token(other, "Contract", 0))
+    assert (!LedgerAccount.same_asset(CryptoIdentity.core_asset(a), CryptoIdentity.core_asset(c)))
+  end
+  test "precision bounds and positive exact amount invariants" do
+    let n = CryptoTest.expect(CryptoIdentity.network("test", "1"))
+    assert (Result.is_err(CryptoIdentity.native(n, -1)))
+    assert (Result.is_err(CryptoIdentity.native(n, 256)))
+    let a = CryptoTest.expect(CryptoIdentity.native(n, 0))
+    let high = CryptoTest.expect(CryptoIdentity.native(n, 255))
+    assert (CryptoIdentity.precision(high) == 255)
+    let q = FinanceAmount.from_atoms(CryptoIdentity.core_asset(a), BigInt.one())
+    let amount = CryptoTest.expect(CryptoIdentity.amount(a, q))
+    assert (BigInt.to_string(FinanceAmount.atoms(CryptoIdentity.quantity(amount))) == "1")
+    assert (Option.is_some(CryptoIdentity.descriptor(amount)))
+    assert (Result.is_err(CryptoIdentity.amount(high, q)))
+    assert (Result.is_err(CryptoIdentity.exchange_amount(FinanceAmount.from_atoms(CryptoIdentity.core_asset(a), BigInt.zero()))))
+    assert (Result.is_err(CryptoIdentity.amount(a, FinanceAmount.negate(q))))
+    assert (Option.is_none(CryptoIdentity.descriptor(CryptoTest.expect(CryptoIdentity.exchange_amount(q)))))
+  end
+end

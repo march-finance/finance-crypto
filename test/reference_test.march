@@ -1,0 +1,28 @@
+mod CryptoReferenceTest do
+  test "event keys distinguish transaction events and exchange scopes" do
+    let n = CryptoTest.expect(CryptoIdentity.network("test", "1"))
+    let a = CryptoTest.expect(CryptoReference.on_chain(n, "tx", "0"))
+    let b = CryptoTest.expect(CryptoReference.on_chain(n, "tx", "1"))
+    assert (CryptoReference.key(a) == "finance-crypto:v1:chain:9:4:test1:12:tx1:0")
+    assert (CryptoReference.key(a) != CryptoReference.key(b))
+    let c = CryptoTest.expect(CryptoReference.exchange("venue", "a", "0"))
+    let d = CryptoTest.expect(CryptoReference.exchange("venue", "b", "0"))
+    assert (CryptoReference.key(c) != CryptoReference.key(d))
+    assert (Option.is_none(CryptoReference.network(c)))
+    assert (Option.is_some(CryptoReference.network(a)))
+  end
+  test "reference metadata retains supplied times and rejects malformed inputs" do
+    let r = CryptoTest.expect(CryptoReference.exchange("venue", "account", "fill"))
+    let m = CryptoTest.expect(CryptoReference.metadata(r, "import", 100, 101))
+    assert (FinanceMetadata.source(m) == "import")
+    assert (FinanceMetadata.effective(m) == 100)
+    assert (FinanceMetadata.recorded(m) == 101)
+    assert (FinanceMetadata.external_id(m) == Some(CryptoReference.key(r)))
+    assert (match CryptoReference.metadata(r, "import", 102, 101) do
+      Err(CryptoError.Core(FinanceError.InvalidMetadata)) -> true
+      _ -> false
+    end)
+    assert (Result.is_err(CryptoReference.exchange("venue", "", "fill")))
+    assert (Result.is_err(CryptoReference.exchange("venue", "account", "bad id")))
+  end
+end

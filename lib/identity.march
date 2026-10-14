@@ -1,0 +1,49 @@
+mod CryptoIdentity do
+  opaque type Network = NetworkValue(String, String)
+  type AssetKind = Native | Token
+  derive Eq for AssetKind
+  opaque type Asset = AssetValue(Network, AssetKind, Option(String), FinanceAsset.Asset)
+  opaque type Amount = AmountValue(FinanceAmount.Quantity, Option(Asset))
+
+  fn component(s : String) : String do int_to_string(String.byte_size(s)) ++ ":" ++ s end
+  fn valid_id(s : String) : Bool do
+    !String.is_empty(s) && !List.any(string_chars(s), fn c -> c <= " " || c == string_from_chars([char_from_int(127)]))
+  end
+  fn network(namespace : String, reference : String) : Result(Network, CryptoError.Error) do
+    if valid_id(namespace) && valid_id(reference) do Ok(NetworkValue(namespace, reference)) else Err(CryptoError.InvalidId) end
+  end
+  fn namespace(n : Network) : String do match n do NetworkValue(ns, _) -> ns end end
+  fn network_reference(n : Network) : String do match n do NetworkValue(_, ref) -> ref end end
+  fn network_id(n : Network) : String do component(namespace(n)) ++ component(network_reference(n)) end
+  fn same_network(a : Network, b : Network) : Bool do network_id(a) == network_id(b) end
+
+  fn native(n : Network, precision : Int) : Result(Asset, CryptoError.Error) do
+    let? a = Result.map_err(FinanceAsset.native(network_id(n), precision), fn e -> CryptoError.Core(e))
+    Ok(AssetValue(n, Native, None, a))
+  end
+  fn token(n : Network, contract : String, precision : Int) : Result(Asset, CryptoError.Error) do
+    if !valid_id(contract) do Err(CryptoError.InvalidId) else
+      let? a = Result.map_err(FinanceAsset.token(network_id(n), contract, precision), fn e -> CryptoError.Core(e))
+      Ok(AssetValue(n, Token, Some(contract), a))
+    end
+  end
+  fn asset_network(a : Asset) : Network do match a do AssetValue(n, _, _, _) -> n end end
+  fn asset_kind(a : Asset) : AssetKind do match a do AssetValue(_, k, _, _) -> k end end
+  fn contract(a : Asset) : Option(String) do match a do AssetValue(_, _, c, _) -> c end end
+  fn core_asset(a : Asset) : FinanceAsset.Asset do match a do AssetValue(_, _, _, c) -> c end end
+  fn precision(a : Asset) : {Int | _ >= 0 && _ <= 255} do FinanceAsset.precision(core_asset(a)) end
+
+  doc "Positive exact on-chain amount with explicit network provenance."
+  fn amount(a : Asset, q : FinanceAmount.Quantity) : Result(Amount, CryptoError.Error) do
+    if BigInt.compare(FinanceAmount.atoms(q), BigInt.zero()) <= 0 do Err(CryptoError.InvalidAmount)
+    else if !LedgerAccount.same_asset(core_asset(a), FinanceAmount.quantity_asset(q)) do Err(CryptoError.AssetMismatch)
+    else Ok(AmountValue(q, Some(a))) end end
+  end
+  doc "Positive exchange amount; not eligible for on-chain operations without a descriptor."
+  fn exchange_amount(q : FinanceAmount.Quantity) : Result(Amount, CryptoError.Error) do
+    if BigInt.compare(FinanceAmount.atoms(q), BigInt.zero()) <= 0 do Err(CryptoError.InvalidAmount)
+    else Ok(AmountValue(q, None)) end
+  end
+  fn quantity(a : Amount) : FinanceAmount.Quantity do match a do AmountValue(q, _) -> q end end
+  fn descriptor(a : Amount) : Option(Asset) do match a do AmountValue(_, d) -> d end end
+end

@@ -4,6 +4,13 @@
 
 Licensed under the [MIT License](LICENSE).
 
+## Documentation
+
+Start with the [library guide](docs/guide.md) for installation, a complete tested
+quickstart, API usage, error handling and operational limits. The
+[quickstart source](test/docs_quickstart_test.march) runs in the normal test suite.
+This README provides the module overview and detailed reference notes below.
+
 ## GitHub checkout and CI
 
 Clone this repository and resolve its published dependencies:

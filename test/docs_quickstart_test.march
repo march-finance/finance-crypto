@@ -1,0 +1,27 @@
+mod CryptoQuickstart do
+  needs IO.Clock, IO.Process
+
+  fn example() : Result(CryptoEvent.Event, CryptoError.Error) do
+    let? network = CryptoIdentity.network("eip155", "1")
+    let? native = CryptoIdentity.native(network, 18)
+    let asset = CryptoIdentity.core_asset(native)
+    let quantity = FinanceAmount.from_atoms(asset, BigInt.one())
+    let? amount = CryptoIdentity.amount(native, quantity)
+    let? source = Result.map_err(
+      LedgerAccount.make("wallet-a", LedgerAccount.AssetAccount, asset),
+      fn e -> CryptoError.Ledger(e))
+    let? destination = Result.map_err(
+      LedgerAccount.make("wallet-b", LedgerAccount.AssetAccount, asset),
+      fn e -> CryptoError.Ledger(e))
+    let? reference = CryptoReference.on_chain(network, "example-tx", "transfer-0")
+    let? context = CryptoEvent.context("transfer-1", reference, "wallet-import", 100, 101)
+    CryptoEvent.transfer(context, amount, source, destination, None)
+  end
+
+  test "documented native transfer builds two postings" do
+    let event = Result.unwrap(example())
+    let postings = LedgerEntry.postings(CryptoEvent.draft(event))
+    assert (List.length(postings) == 2)
+    assert (FinanceAmount.format(LedgerEntry.quantity(List.head(postings))) == "0.000000000000000001")
+  end
+end

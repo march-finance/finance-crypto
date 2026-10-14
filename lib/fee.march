@@ -1,8 +1,22 @@
+-- CryptoFee — Explicit additional gross fee movements and account/reference validation.
+-- Fees debit ExpenseAccount and credit AssetAccount. Gas requires native chain provenance;
+-- no fee deduction from principal, funds check or network estimation is performed.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CryptoFee do
+  -- ServiceFee for general fees; Gas only for native on-chain costs. Labels do not create
+  -- separate ledger replay namespaces.
   type FeeKind = ServiceFee | Gas
   derive Eq for FeeKind
+  -- Opaque positive amount, fee kind, distinct funding AssetAccount and matching
+  -- ExpenseAccount. Reference-network compatibility is checked separately.
   opaque type Fee = FeeValue(FeeKind, CryptoIdentity.Amount, LedgerAccount.Account, LedgerAccount.Account)
 
+  doc """
+  Return true exactly for AssetAccount. Pure role predicate; does not establish wallet
+  ownership, custody authorization or available funds.
+  """
   fn is_custody(a : LedgerAccount.Account) : Bool do
     match LedgerAccount.kind(a) do
       LedgerAccount.AssetAccount -> true
@@ -15,6 +29,10 @@ mod CryptoFee do
       _ -> false
     end
   end
+  doc """
+  Return whether account a declares amount's asset identity and precision. Pure predicate;
+  does not check account role or journal membership.
+  """
   fn matches_amount(a : LedgerAccount.Account, amount : CryptoIdentity.Amount) : Bool do
     LedgerAccount.same_asset(LedgerAccount.asset(a), FinanceAmount.quantity_asset(CryptoIdentity.quantity(amount)))
   end
@@ -27,13 +45,23 @@ mod CryptoFee do
       LedgerAccount.ExpenseAccount -> 4
     end
   end
-  doc "Repeated IDs must refer to identical account definitions."
+  doc """
+  Return Ok when repeated account IDs have identical kind, identity and precision,
+  otherwise ConflictingAccount. Consistent repeated IDs are allowed for shared
+  principal/fee funding; this does not require global uniqueness like a journal chart.
+  """
   fn check_accounts(accounts : List(LedgerAccount.Account)) : Result(Unit, CryptoError.Error) do
     let valid = List.all(accounts, fn a -> List.all(accounts, fn b ->
       LedgerAccount.id(a) != LedgerAccount.id(b) ||
         (kind_code(a) == kind_code(b) && LedgerAccount.same_asset(LedgerAccount.asset(a), LedgerAccount.asset(b)))))
     if valid do Ok(()) else Err(CryptoError.ConflictingAccount) end
   end
+  doc """
+  Construct fee from positive amount, funding and expense. AccountAlias for same ID;
+  InvalidAccountRole unless funding is AssetAccount and expense ExpenseAccount;
+  AssetMismatch for quantity disagreement; InvalidGasAsset unless Gas uses a native
+  descriptor. Network/reference compatibility is deferred to check_reference.
+  """
   fn make(kind : FeeKind, amount : CryptoIdentity.Amount, funding : LedgerAccount.Account, expense : LedgerAccount.Account) : Result(Fee, CryptoError.Error) do
     if LedgerAccount.id(funding) == LedgerAccount.id(expense) do Err(CryptoError.AccountAlias)
     else if !is_custody(funding) || !is_expense(expense) do Err(CryptoError.InvalidAccountRole)
@@ -47,9 +75,26 @@ mod CryptoFee do
       else Ok(FeeValue(kind, amount, funding, expense)) end
     end end end
   end
+  doc """
+  Return f's Gas or ServiceFee label. Infallible; labels are descriptive and do not affect
+  replay-key namespaces.
+  """
   fn kind(f : Fee) : FeeKind do match f do FeeValue(k, _, _, _) -> k end end
+  doc """
+  Return f's positive exact Amount. Infallible; amount is additional to gross principal,
+  not included in it.
+  """
   fn amount(f : Fee) : CryptoIdentity.Amount do match f do FeeValue(_, a, _, _) -> a end end
+  doc """
+  Return [funding account, expense account] in that order. Infallible; this order differs
+  from postings, which lists debit expense first.
+  """
   fn accounts(f : Fee) : List(LedgerAccount.Account) do match f do FeeValue(_, _, funding, expense) -> [funding, expense] end end
+  doc """
+  Return [debit expense, credit funding] for f's full amount. No principal deduction or
+  journal append occurs. Wrap any posting-constructor failure as Ledger(error); validated
+  Fee normally satisfies those constructors.
+  """
   fn postings(f : Fee) : Result(List(LedgerEntry.Posting), CryptoError.Error) do
     match f do FeeValue(_, a, funding, expense) ->
       let? debit = Result.map_err(LedgerEntry.posting(LedgerAccount.id(expense), LedgerEntry.Debit, CryptoIdentity.quantity(a)), fn e -> CryptoError.Ledger(e))
@@ -57,6 +102,11 @@ mod CryptoFee do
       Ok([debit, credit])
     end
   end
+  doc """
+  Return Ok for any amount with exchange reference. On-chain r requires descriptor on the
+  same network or NetworkMismatch. Does not check addresses, confirmations or asset
+  existence.
+  """
   fn check_amount_reference(a : CryptoIdentity.Amount, r : CryptoReference.Reference) : Result(Unit, CryptoError.Error) do
     match CryptoReference.network(r) do
       None -> Ok(())
@@ -66,6 +116,11 @@ mod CryptoFee do
       end
     end
   end
+  doc """
+  Check f against r: Gas with exchange reference returns InvalidGasAsset; otherwise
+  require amount's chain descriptor to match an on-chain network or NetworkMismatch. No
+  live network calls.
+  """
   fn check_reference(f : Fee, r : CryptoReference.Reference) : Result(Unit, CryptoError.Error) do
     if kind(f) == Gas && Option.is_none(CryptoReference.network(r)) do Err(CryptoError.InvalidGasAsset)
     else check_amount_reference(amount(f), r) end

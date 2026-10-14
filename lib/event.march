@@ -1,9 +1,27 @@
+-- CryptoEvent — Pure normalized transfer/deposit/withdrawal/trade/fee-only envelopes
+-- containing balanced drafts. Builders validate roles, identities, aliases and reference
+-- networks but never post, broadcast or establish finality. Persist envelopes separately
+-- if needed; journals retain only drafts.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CryptoEvent do
+  -- Descriptive Transfer, Deposit, Withdrawal, Trade or FeeOnly label. Not a separate ledger
+  -- uniqueness namespace.
   type EventKind = Transfer | Deposit | Withdrawal | Trade | FeeOnly
   derive Eq for EventKind
+  -- Opaque valid draft ID, reference and source/timestamp metadata. Stable values are
+  -- required across retries.
   opaque type Context = ContextValue(String, CryptoReference.Reference, FinanceMetadata.Metadata)
+  -- Opaque kind, reference, metadata and financial Draft. Successful construction is not a
+  -- guarantee that a destination journal accepts the draft.
   opaque type Event = EventValue(EventKind, CryptoReference.Reference, FinanceMetadata.Metadata, LedgerEntry.Draft)
 
+  doc """
+  Build context from id, ref, source and UTC Unix effective/recorded seconds. InvalidId
+  for malformed draft ID; Core(InvalidMetadata) for invalid provenance/time order.
+  Reference key becomes external ID. Preserve recorded time across retries.
+  """
   fn context(id : String, ref : CryptoReference.Reference, source : String, effective : Int, recorded : Int) : Result(Context, CryptoError.Error) do
     if !CryptoIdentity.valid_id(id) do Err(CryptoError.InvalidId) else
       let? m = CryptoReference.metadata(ref, source, effective, recorded)
@@ -11,9 +29,24 @@ mod CryptoEvent do
     end
   end
   pfn context_reference(c : Context) : CryptoReference.Reference do match c do ContextValue(_, r, _) -> r end end
+  doc """
+  Return e's descriptive EventKind. Infallible; not part of the ledger replay key.
+  """
   fn kind(e : Event) : EventKind do match e do EventValue(k, _, _, _) -> k end end
+  doc """
+  Return e's immutable source-event reference. Infallible; not evidence of external
+  finality.
+  """
   fn reference(e : Event) : CryptoReference.Reference do match e do EventValue(_, r, _, _) -> r end end
+  doc """
+  Return e's source/effective/recorded/reference-key metadata. Infallible; same provenance
+  is stored in draft(e).
+  """
   fn metadata(e : Event) : FinanceMetadata.Metadata do match e do EventValue(_, _, m, _) -> m end end
+  doc """
+  Return e's immutable financial draft for destination ledger validation/posting.
+  Infallible; this does not append or reserve anything, and does not persist the envelope.
+  """
   fn draft(e : Event) : LedgerEntry.Draft do match e do EventValue(_, _, _, d) -> d end end
 
   pfn finish(c : Context, kind : EventKind, accounts : List(LedgerAccount.Account), ps : List(LedgerEntry.Posting), fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
@@ -46,25 +79,49 @@ mod CryptoEvent do
     end end
   end
 
+  doc """
+  Build gross amount movement: credit source, debit destination; both must be distinct
+  AssetAccounts matching amount. Append optional fee separately. Return
+  InvalidAccountRole, AccountAlias, AssetMismatch, NetworkMismatch, ConflictingAccount or
+  wrapped posting/fee errors. Does not check funds or post.
+  """
   fn transfer(c : Context, amount : CryptoIdentity.Amount, source : LedgerAccount.Account, destination : LedgerAccount.Account, fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
     if !CryptoFee.is_custody(source) || !CryptoFee.is_custody(destination) do Err(CryptoError.InvalidAccountRole) else
       let? ps = pair(c, amount, source, destination)
       finish(c, Transfer, [source, destination], ps, fee)
     end
   end
+  doc """
+  Build credit counterparty/debit custody for gross amount, plus optional additional fee.
+  Custody must be AssetAccount; counterparty kind is caller-selected, not inferred as
+  income. Require distinct IDs, matching assets/precision and reference network; propagate
+  role/alias/asset/network/conflict or wrapped errors.
+  """
   fn deposit(c : Context, amount : CryptoIdentity.Amount, counterparty : LedgerAccount.Account, custody : LedgerAccount.Account, fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
     if !CryptoFee.is_custody(custody) do Err(CryptoError.InvalidAccountRole) else
       let? ps = pair(c, amount, counterparty, custody)
       finish(c, Deposit, [counterparty, custody], ps, fee)
     end
   end
+  doc """
+  Build credit custody/debit counterparty for gross amount, plus optional additional fee.
+  Custody must be AssetAccount; counterparty is not automatically expense. Enforce
+  distinct IDs, asset/precision, network and repeated-definition consistency; propagate
+  domain/wrapped errors. No funds check.
+  """
   fn withdrawal(c : Context, amount : CryptoIdentity.Amount, custody : LedgerAccount.Account, counterparty : LedgerAccount.Account, fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
     if !CryptoFee.is_custody(custody) do Err(CryptoError.InvalidAccountRole) else
       let? ps = pair(c, amount, custody, counterparty)
       finish(c, Withdrawal, [custody, counterparty], ps, fee)
     end
   end
-  doc "Four gross trade legs plus optional separate fee legs; no implicit valuation."
+  doc """
+  Build four gross legs: debit receive/credit buy_clearing for buy; credit pay/debit
+  sell_clearing for sell; then optional extra fee. Receive/pay must be AssetAccounts;
+  buy/sell asset+precision must differ. Require matching networks/accounts and no same-leg
+  alias; propagate role/asset/network/alias/conflict or wrapped errors. No price,
+  valuation or cross-asset netting.
+  """
   fn trade(c : Context, buy : CryptoIdentity.Amount, sell : CryptoIdentity.Amount, receive : LedgerAccount.Account, pay : LedgerAccount.Account, buy_clearing : LedgerAccount.Account, sell_clearing : LedgerAccount.Account, fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
     if !CryptoFee.is_custody(receive) || !CryptoFee.is_custody(pay) do Err(CryptoError.InvalidAccountRole)
     else if LedgerAccount.same_asset(FinanceAmount.quantity_asset(CryptoIdentity.quantity(buy)), FinanceAmount.quantity_asset(CryptoIdentity.quantity(sell))) do Err(CryptoError.AssetMismatch)
@@ -74,7 +131,11 @@ mod CryptoEvent do
       finish(c, Trade, [receive, pay, buy_clearing, sell_clearing], List.append(bought, sold), fee)
     end end
   end
-  doc "Fee-only adjustment or failed transaction; emits no principal legs."
+  doc """
+  Build only fee expense/funding postings with context provenance, e.g. paid gas for a
+  failed transaction. Enforce fee/reference compatibility and account consistency,
+  propagating their errors. No zero principal, implied success or journal append.
+  """
   fn fee_only(c : Context, fee : CryptoFee.Fee) : Result(Event, CryptoError.Error) do
     finish(c, FeeOnly, Nil, Nil, Some(fee))
   end

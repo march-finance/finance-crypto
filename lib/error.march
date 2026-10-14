@@ -1,3 +1,14 @@
+-- CryptoError — Structured crypto normalization errors, wrapping core/ledger failures
+-- without erasing their variants. Match variants; builder success does not guarantee
+-- posting success.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CryptoError do
+  -- InvalidId/InvalidAmount: malformed identity or nonpositive atoms;
+  -- AssetMismatch/NetworkMismatch: quantity or provenance disagreement;
+  -- InvalidAccountRole/AccountAlias: invalid movement endpoints; InvalidGasAsset: nonnative
+  -- or exchange gas; ConflictingAccount: inconsistent repeated ID;
+  -- Core(error)/Ledger(error): dependency failure.
   type Error = InvalidId | InvalidAmount | AssetMismatch | NetworkMismatch | InvalidAccountRole | AccountAlias | InvalidGasAsset | ConflictingAccount | Core(FinanceError.Error) | Ledger(LedgerError.Error)
 end

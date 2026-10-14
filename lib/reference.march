@@ -1,27 +1,59 @@
+-- CryptoReference — Stable source-event references for chain and exchange ingestion. Keys
+-- distinguish events within one transaction and accounts within one venue. References are
+-- opaque strings, not proof of inclusion, finality or authenticity.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CryptoReference do
+  -- Opaque chain(network, transaction ID, event ID) or exchange(venue, account scope, event
+  -- ID). Construct through on_chain/exchange; components remain case-sensitive.
   opaque type Reference = ChainReference(CryptoIdentity.Network, String, String) | ExchangeReference(String, String, String)
 
+  doc """
+  Construct reference for n, transaction_id and event_id; InvalidId for either malformed
+  component. Include a stable event ID even when a transaction has only one event. No
+  transaction-hash or chain lookup is performed.
+  """
   fn on_chain(n : CryptoIdentity.Network, transaction_id : String, event_id : String) : Result(Reference, CryptoError.Error) do
     if CryptoIdentity.valid_id(transaction_id) && CryptoIdentity.valid_id(event_id) do Ok(ChainReference(n, transaction_id, event_id))
     else Err(CryptoError.InvalidId) end
   end
+  doc """
+  Construct reference from venue, account_scope and event_id; InvalidId if any component
+  is invalid. Account scope prevents fills in different accounts from sharing keys;
+  preserve adapter-canonical spelling.
+  """
   fn exchange(venue : String, account_scope : String, event_id : String) : Result(Reference, CryptoError.Error) do
     if CryptoIdentity.valid_id(venue) && CryptoIdentity.valid_id(account_scope) && CryptoIdentity.valid_id(event_id) do
       Ok(ExchangeReference(venue, account_scope, event_id))
     else Err(CryptoError.InvalidId) end
   end
+  doc """
+  Return Some(network) for an on-chain reference, None for exchange. Infallible; None is
+  not a default/mainnet network.
+  """
   fn network(r : Reference) : Option(CryptoIdentity.Network) do
     match r do
       ChainReference(n, _, _) -> Some(n)
       ExchangeReference(_, _, _) -> None
     end
   end
+  doc """
+  Return versioned length-prefixed stable key including all reference components.
+  Infallible; key is used as metadata.external_id, with source as a separate namespace. It
+  is not a cryptographic hash.
+  """
   fn key(r : Reference) : String do
     match r do
       ChainReference(n, tx, event) -> "finance-crypto:v1:chain:" ++ CryptoIdentity.component(CryptoIdentity.network_id(n)) ++ CryptoIdentity.component(tx) ++ CryptoIdentity.component(event)
       ExchangeReference(venue, account, event) -> "finance-crypto:v1:exchange:" ++ CryptoIdentity.component(venue) ++ CryptoIdentity.component(account) ++ CryptoIdentity.component(event)
     end
   end
+  doc """
+  Build provenance using key(r) as Some(external_id), caller source and effective/recorded
+  UTC Unix seconds. Wrap metadata failures as Core(InvalidMetadata), including blank
+  source or effective > recorded. No clock read or uniqueness reservation.
+  """
   fn metadata(r : Reference, source : String, effective : Int, recorded : Int) : Result(FinanceMetadata.Metadata, CryptoError.Error) do
     Result.map_err(FinanceMetadata.make(source, effective, recorded, Some(key(r))), fn e -> CryptoError.Core(e))
   end

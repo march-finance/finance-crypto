@@ -1,49 +1,136 @@
+-- CryptoIdentity — Chain-qualified opaque identities and positive exact amounts.
+-- Components are preserved and byte-length-prefixed. Callers own canonicalization,
+-- address/checksum validation, environment selection and token decimals; no RPC or chain
+-- registry is consulted.
+--
+-- Usage and tested examples: docs/guide.md and test/docs_quickstart_test.march.
+
 mod CryptoIdentity do
+  -- Opaque validated namespace and network reference. Include environment/mainnet/testnet in
+  -- the caller's canonical reference.
   opaque type Network = NetworkValue(String, String)
+  -- Native network currency or Token contract/mint descriptor; does not identify assets by
+  -- ticker or validate chain state.
   type AssetKind = Native | Token
   derive Eq for AssetKind
+  -- Opaque network, native/token kind, optional contract and corresponding
+  -- FinanceAsset.Asset. Use core_asset to build matching quantities/accounts.
   opaque type Asset = AssetValue(Network, AssetKind, Option(String), FinanceAsset.Asset)
+  -- Opaque strictly positive Quantity with optional chain Asset descriptor. Descriptor-free
+  -- exchange amounts are not eligible for on-chain events.
   opaque type Amount = AmountValue(FinanceAmount.Quantity, Option(Asset))
 
+  doc """
+  Return byte-length-prefixed s as length:content. Pure encoding helper, not validation or
+  hashing. Example: component("abc") is "3:abc".
+  """
   fn component(s : String) : String do int_to_string(String.byte_size(s)) ++ ":" ++ s end
+  doc """
+  Return true for nonempty s without ASCII whitespace/control characters or DEL. Does not
+  check protocol grammar, address checksum, casing or existence.
+  """
   fn valid_id(s : String) : Bool do
     !String.is_empty(s) && !List.any(string_chars(s), fn c -> c <= " " || c == string_from_chars([char_from_int(127)]))
   end
+  doc """
+  Construct a Network from namespace and reference; InvalidId if either fails valid_id.
+  Preserve spelling and case. Example: network("eip155", "1"). No namespace registry is
+  enforced.
+  """
   fn network(namespace : String, reference : String) : Result(Network, CryptoError.Error) do
     if valid_id(namespace) && valid_id(reference) do Ok(NetworkValue(namespace, reference)) else Err(CryptoError.InvalidId) end
   end
+  doc """
+  Return n's exact namespace component. Infallible; no normalization occurs.
+  """
   fn namespace(n : Network) : String do match n do NetworkValue(ns, _) -> ns end end
+  doc """
+  Return n's exact reference component. Infallible; interpretation and environment
+  selection belong to the adapter.
+  """
   fn network_reference(n : Network) : String do match n do NetworkValue(_, ref) -> ref end end
+  doc """
+  Return deterministic length-prefixed namespace+reference encoding. Infallible; used for
+  core identity construction, not a human ticker or cryptographic digest.
+  """
   fn network_id(n : Network) : String do component(namespace(n)) ++ component(network_reference(n)) end
+  doc """
+  Return true when both namespace and reference encode identically. Infallible; distinct
+  spelling/case remains distinct.
+  """
   fn same_network(a : Network, b : Network) : Bool do network_id(a) == network_id(b) end
 
+  doc """
+  Construct native descriptor for n and precision (0..255). Wrap core asset errors in
+  Core, including InvalidPrecision. Does not look up native decimals. Use core_asset on
+  the result for ledger/quantity construction.
+  """
   fn native(n : Network, precision : Int) : Result(Asset, CryptoError.Error) do
     let? a = Result.map_err(FinanceAsset.native(network_id(n), precision), fn e -> CryptoError.Core(e))
     Ok(AssetValue(n, Native, None, a))
   end
+  doc """
+  Construct token descriptor for n, contract/mint and precision. InvalidId for malformed
+  component; Core(InvalidPrecision) outside 0..255. Preserve case; no address or decimal
+  lookup. Different networks yield distinct identities.
+  """
   fn token(n : Network, contract : String, precision : Int) : Result(Asset, CryptoError.Error) do
     if !valid_id(contract) do Err(CryptoError.InvalidId) else
       let? a = Result.map_err(FinanceAsset.token(network_id(n), contract, precision), fn e -> CryptoError.Core(e))
       Ok(AssetValue(n, Token, Some(contract), a))
     end
   end
+  doc """
+  Return a's validated network. Infallible; not a live chain connection.
+  """
   fn asset_network(a : Asset) : Network do match a do AssetValue(n, _, _, _) -> n end end
+  doc """
+  Return Native or Token for a. Infallible; no protocol classification lookup occurs.
+  """
   fn asset_kind(a : Asset) : AssetKind do match a do AssetValue(_, k, _, _) -> k end end
+  doc """
+  Return Some(contract/mint) for Token, None for Native. Infallible and preserves caller
+  spelling.
+  """
   fn contract(a : Asset) : Option(String) do match a do AssetValue(_, _, c, _) -> c end end
+  doc """
+  Return a's matching core asset and precision. Infallible; use this value rather than
+  rebuilding an identity from a ticker or another encoding.
+  """
   fn core_asset(a : Asset) : FinanceAsset.Asset do match a do AssetValue(_, _, _, c) -> c end end
+  doc """
+  Return declared precision refined to 0..255. Constructors enforce runtime bounds; March
+  0.5.0 does not prove every accessor-to-power10 obligation.
+  """
   fn precision(a : Asset) : {Int | _ >= 0 && _ <= 255} do FinanceAsset.precision(core_asset(a)) end
 
-  doc "Positive exact on-chain amount with explicit network provenance."
+  doc """
+  Attach descriptor a to positive q. InvalidAmount for nonpositive atoms; AssetMismatch if
+  identity or precision disagrees with core_asset(a). Exact quantity is preserved. No unit
+  conversion occurs.
+  """
   fn amount(a : Asset, q : FinanceAmount.Quantity) : Result(Amount, CryptoError.Error) do
     if BigInt.compare(FinanceAmount.atoms(q), BigInt.zero()) <= 0 do Err(CryptoError.InvalidAmount)
     else if !LedgerAccount.same_asset(core_asset(a), FinanceAmount.quantity_asset(q)) do Err(CryptoError.AssetMismatch)
     else Ok(AmountValue(q, Some(a))) end end
   end
-  doc "Positive exchange amount; not eligible for on-chain operations without a descriptor."
+  doc """
+  Wrap strictly positive q without chain provenance; InvalidAmount for zero/negative
+  atoms. Permits fiat and arbitrary validated core assets. Cannot be used on-chain until
+  an explicit matching descriptor is supplied through amount.
+  """
   fn exchange_amount(q : FinanceAmount.Quantity) : Result(Amount, CryptoError.Error) do
     if BigInt.compare(FinanceAmount.atoms(q), BigInt.zero()) <= 0 do Err(CryptoError.InvalidAmount)
     else Ok(AmountValue(q, None)) end
   end
+  doc """
+  Return a's exact positive core Quantity. Infallible; no Float conversion or
+  normalization occurs.
+  """
   fn quantity(a : Amount) : FinanceAmount.Quantity do match a do AmountValue(q, _) -> q end end
+  doc """
+  Return a's optional chain asset descriptor. None denotes descriptor-free exchange input,
+  not an unknown-but-implicitly-valid chain asset.
+  """
   fn descriptor(a : Amount) : Option(Asset) do match a do AmountValue(_, d) -> d end end
 end

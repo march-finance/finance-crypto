@@ -1,7 +1,7 @@
 mod CryptoFee do
-  type Kind = ServiceFee | Gas
-  derive Eq for Kind
-  opaque type Fee = FeeValue(Kind, CryptoIdentity.Amount, LedgerAccount.Account, LedgerAccount.Account)
+  type FeeKind = ServiceFee | Gas
+  derive Eq for FeeKind
+  opaque type Fee = FeeValue(FeeKind, CryptoIdentity.Amount, LedgerAccount.Account, LedgerAccount.Account)
 
   fn is_custody(a : LedgerAccount.Account) : Bool do
     match LedgerAccount.kind(a) do
@@ -34,7 +34,7 @@ mod CryptoFee do
         (kind_code(a) == kind_code(b) && LedgerAccount.same_asset(LedgerAccount.asset(a), LedgerAccount.asset(b)))))
     if valid do Ok(()) else Err(CryptoError.ConflictingAccount) end
   end
-  fn make(kind : Kind, amount : CryptoIdentity.Amount, funding : LedgerAccount.Account, expense : LedgerAccount.Account) : Result(Fee, CryptoError.Error) do
+  fn make(kind : FeeKind, amount : CryptoIdentity.Amount, funding : LedgerAccount.Account, expense : LedgerAccount.Account) : Result(Fee, CryptoError.Error) do
     if LedgerAccount.id(funding) == LedgerAccount.id(expense) do Err(CryptoError.AccountAlias)
     else if !is_custody(funding) || !is_expense(expense) do Err(CryptoError.InvalidAccountRole)
     else if !matches_amount(funding, amount) || !matches_amount(expense, amount) do Err(CryptoError.AssetMismatch)
@@ -47,7 +47,7 @@ mod CryptoFee do
       else Ok(FeeValue(kind, amount, funding, expense)) end
     end end end
   end
-  fn kind(f : Fee) : Kind do match f do FeeValue(k, _, _, _) -> k end end
+  fn kind(f : Fee) : FeeKind do match f do FeeValue(k, _, _, _) -> k end end
   fn amount(f : Fee) : CryptoIdentity.Amount do match f do FeeValue(_, a, _, _) -> a end end
   fn accounts(f : Fee) : List(LedgerAccount.Account) do match f do FeeValue(_, _, funding, expense) -> [funding, expense] end end
   fn postings(f : Fee) : Result(List(LedgerEntry.Posting), CryptoError.Error) do

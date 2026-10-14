@@ -1,0 +1,178 @@
+mod CryptoEventTest do
+  fn context(id : String, event_id : String) do
+    CryptoTest.expect(CryptoEvent.context(id, CryptoTest.chain_ref(event_id), "import", 100, 101))
+  end
+  fn setup(asset : FinanceAsset.Asset) do
+    let wallet = CryptoTest.account("wallet", LedgerAccount.AssetAccount, asset)
+    let other = CryptoTest.account("other", LedgerAccount.AssetAccount, asset)
+    let expense = CryptoTest.account("fees", LedgerAccount.ExpenseAccount, asset)
+    let journal = CryptoTest.expect(LedgerJournal.new([wallet, other, expense]))
+    (wallet, other, expense, journal)
+  end
+  fn atoms(l : LedgerJournal.Ledger, id : String) : String do
+    BigInt.to_string(FinanceAmount.atoms(CryptoTest.expect(LedgerJournal.balance(l, id))))
+  end
+  test "withdrawal fees are additional not netted from principal" do
+    let a = CryptoTest.native()
+    let (wallet, other, expense, l) = setup(CryptoIdentity.core_asset(a))
+    let fee = CryptoTest.expect(CryptoFee.make(CryptoFee.Gas, CryptoTest.amount(a, 1), wallet, expense))
+    let event = CryptoTest.expect(CryptoEvent.withdrawal(context("entry", "0"), CryptoTest.amount(a, 10), wallet, other, Some(fee)))
+    let (posted, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(event)))
+    assert (atoms(posted, "wallet") == "-11")
+    assert (atoms(posted, "other") == "10")
+    assert (atoms(posted, "fees") == "1")
+    assert (CryptoReference.key(CryptoEvent.reference(event)) == CryptoReference.key(CryptoTest.chain_ref("0")))
+    assert (FinanceMetadata.recorded(CryptoEvent.metadata(event)) == 101)
+    assert (CryptoEvent.kind(event) == CryptoEvent.Withdrawal)
+  end
+  test "deposit and transfer route exact quantities to custody" do
+    let a = CryptoTest.native()
+    let (wallet, other, _, l) = setup(CryptoIdentity.core_asset(a))
+    let q = CryptoTest.amount(a, 10)
+    let deposit = CryptoTest.expect(CryptoEvent.deposit(context("deposit", "0"), q, other, wallet, None))
+    let (deposited, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(deposit)))
+    assert (atoms(deposited, "wallet") == "10")
+    assert (atoms(deposited, "other") == "-10")
+    let transfer = CryptoTest.expect(CryptoEvent.transfer(context("transfer", "1"), q, wallet, other, None))
+    let (transferred, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(transfer)))
+    assert (atoms(transferred, "wallet") == "-10")
+    assert (atoms(transferred, "other") == "10")
+  end
+  test "token principal and native gas balance separately and reverse exactly" do
+    let token = CryptoTest.token()
+    let native = CryptoTest.native()
+    let wallet = CryptoTest.account("tokens", LedgerAccount.AssetAccount, CryptoIdentity.core_asset(token))
+    let other = CryptoTest.account("recipient", LedgerAccount.AssetAccount, CryptoIdentity.core_asset(token))
+    let funding = CryptoTest.account("gas-wallet", LedgerAccount.AssetAccount, CryptoIdentity.core_asset(native))
+    let expense = CryptoTest.account("gas", LedgerAccount.ExpenseAccount, CryptoIdentity.core_asset(native))
+    let l = CryptoTest.expect(LedgerJournal.new([wallet, other, funding, expense]))
+    let fee = CryptoTest.expect(CryptoFee.make(CryptoFee.Gas, CryptoTest.amount(native, 1), funding, expense))
+    let event = CryptoTest.expect(CryptoEvent.transfer(context("entry", "0"), CryptoTest.amount(token, 10), wallet, other, Some(fee)))
+    let validated = CryptoTest.expect(LedgerJournal.validate(l, CryptoEvent.draft(event)))
+    let (posted, p) = CryptoTest.expect(LedgerJournal.post_validated(l, validated))
+    assert (atoms(posted, "tokens") == "-10")
+    assert (atoms(posted, "recipient") == "10")
+    assert (atoms(posted, "gas-wallet") == "-1")
+    assert (atoms(posted, "gas") == "1")
+    let m = CryptoTest.expect(FinanceMetadata.make("reorg", 102, 102, Some("undo")))
+    let (reversed, _) = CryptoTest.expect(LedgerJournal.reverse(posted, p, "undo", m))
+    assert (List.all(["tokens", "recipient", "gas-wallet", "gas"], fn id -> atoms(reversed, id) == "0"))
+    assert (atoms(posted, "tokens") == "-10")
+    assert (LedgerJournal.count(l) == 0)
+  end
+  test "failed transaction fee-only event never moves principal" do
+    let a = CryptoTest.native()
+    let (wallet, _, expense, l) = setup(CryptoIdentity.core_asset(a))
+    let fee = CryptoTest.expect(CryptoFee.make(CryptoFee.Gas, CryptoTest.amount(a, 1), wallet, expense))
+    let event = CryptoTest.expect(CryptoEvent.fee_only(context("failed", "gas"), fee))
+    let (posted, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(event)))
+    assert (List.length(LedgerEntry.postings(CryptoEvent.draft(event))) == 2)
+    assert (atoms(posted, "wallet") == "-1")
+    assert (atoms(posted, "fees") == "1")
+    assert (atoms(posted, "other") == "0")
+  end
+  test "on-chain operations reject unproven or wrong-network assets" do
+    let a = CryptoTest.native()
+    let (wallet, other, _, _) = setup(CryptoIdentity.core_asset(a))
+    let q = CryptoTest.amount(a, 1)
+    let raw = CryptoTest.expect(CryptoIdentity.exchange_amount(CryptoIdentity.quantity(q)))
+    assert (match CryptoEvent.transfer(context("entry", "0"), raw, wallet, other, None) do
+      Err(CryptoError.NetworkMismatch) -> true
+      _ -> false
+    end)
+    let n = CryptoTest.expect(CryptoIdentity.network("test", "2"))
+    let r = CryptoTest.expect(CryptoReference.on_chain(n, "tx", "0"))
+    let c = CryptoTest.expect(CryptoEvent.context("entry", r, "import", 100, 101))
+    assert (match CryptoEvent.transfer(c, q, wallet, other, None) do
+      Err(CryptoError.NetworkMismatch) -> true
+      _ -> false
+    end)
+  end
+  test "custody roles aliases asset mismatches and invalid contexts fail" do
+    let a = CryptoTest.native()
+    let (wallet, other, expense, _) = setup(CryptoIdentity.core_asset(a))
+    let q = CryptoTest.amount(a, 1)
+    assert (match CryptoEvent.transfer(context("entry", "0"), q, wallet, wallet, None) do
+      Err(CryptoError.AccountAlias) -> true
+      _ -> false
+    end)
+    assert (match CryptoEvent.transfer(context("entry", "0"), q, wallet, expense, None) do
+      Err(CryptoError.InvalidAccountRole) -> true
+      _ -> false
+    end)
+    assert (Result.is_err(CryptoEvent.deposit(context("entry", "0"), q, other, expense, None)))
+    assert (Result.is_err(CryptoEvent.withdrawal(context("entry", "0"), q, expense, other, None)))
+    let wrong = CryptoTest.account("wrong", LedgerAccount.AssetAccount, CryptoIdentity.core_asset(CryptoTest.token()))
+    assert (match CryptoEvent.transfer(context("entry", "0"), q, wallet, wrong, None) do
+      Err(CryptoError.AssetMismatch) -> true
+      _ -> false
+    end)
+    assert (Result.is_err(CryptoEvent.context("", CryptoTest.chain_ref("0"), "import", 100, 101)))
+    assert (Result.is_err(CryptoEvent.context("entry", CryptoTest.chain_ref("0"), "import", 102, 101)))
+  end
+  test "fee account definitions cannot conflict with principal accounts" do
+    let a = CryptoTest.native()
+    let (wallet, _, expense, _) = setup(CryptoIdentity.core_asset(a))
+    let clearing = CryptoTest.account("fees", LedgerAccount.EquityAccount, CryptoIdentity.core_asset(a))
+    let fee = CryptoTest.expect(CryptoFee.make(CryptoFee.Gas, CryptoTest.amount(a, 1), wallet, expense))
+    assert (match CryptoEvent.withdrawal(context("entry", "0"), CryptoTest.amount(a, 10), wallet, clearing, Some(fee)) do
+      Err(CryptoError.ConflictingAccount) -> true
+      _ -> false
+    end)
+  end
+  test "retries never duplicate events and changed amounts conflict" do
+    let a = CryptoTest.native()
+    let (wallet, other, _, l) = setup(CryptoIdentity.core_asset(a))
+    let e = CryptoTest.expect(CryptoEvent.transfer(context("first", "0"), CryptoTest.amount(a, 10), wallet, other, None))
+    let (posted, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(e)))
+    let (retry, _) = CryptoTest.expect(LedgerJournal.post(posted, CryptoEvent.draft(e)))
+    assert (LedgerJournal.count(retry) == 1)
+    let changed = CryptoTest.expect(CryptoEvent.transfer(context("new-id", "0"), CryptoTest.amount(a, 11), wallet, other, None))
+    assert (match LedgerJournal.post(retry, CryptoEvent.draft(changed)) do
+      Err(LedgerError.ReplayConflict) -> true
+      _ -> false
+    end)
+    let another = CryptoTest.expect(CryptoEvent.transfer(context("second", "1"), CryptoTest.amount(a, 10), wallet, other, None))
+    let (two, _) = CryptoTest.expect(LedgerJournal.post(retry, CryptoEvent.draft(another)))
+    assert (LedgerJournal.count(two) == 2)
+    assert (atoms(two, "wallet") == "-20")
+  end
+  test "the destination journal remains authoritative without partial posting" do
+    let a = CryptoTest.native()
+    let (wallet, other, _, l) = setup(CryptoIdentity.core_asset(a))
+    let e = CryptoTest.expect(CryptoEvent.transfer(context("entry", "0"), CryptoTest.amount(a, 1), wallet, other, None))
+    let (_, _, _, wrong) = setup(CryptoIdentity.core_asset(CryptoTest.token()))
+    assert (match LedgerJournal.post(wrong, CryptoEvent.draft(e)) do
+      Err(LedgerError.AssetMismatch) -> true
+      _ -> false
+    end)
+    assert (LedgerJournal.count(wrong) == 0)
+    assert (atoms(l, "wallet") == "0")
+  end
+  test "exchange fiat trade has four gross legs plus a separate fee pair" do
+    let buy = CryptoTest.amount(CryptoTest.token(), 2)
+    let usd = CryptoTest.expect(FinanceAsset.fiat("USD", 2))
+    let sell = CryptoTest.expect(CryptoIdentity.exchange_amount(FinanceAmount.from_atoms(usd, BigInt.from_int(600))))
+    let receive = CryptoTest.account("token", LedgerAccount.AssetAccount, FinanceAmount.quantity_asset(CryptoIdentity.quantity(buy)))
+    let pay = CryptoTest.account("usd", LedgerAccount.AssetAccount, usd)
+    let bc = CryptoTest.account("token-clearing", LedgerAccount.EquityAccount, LedgerAccount.asset(receive))
+    let sc = CryptoTest.account("usd-clearing", LedgerAccount.EquityAccount, usd)
+    let expense = CryptoTest.account("fees", LedgerAccount.ExpenseAccount, usd)
+    let fq = CryptoTest.expect(CryptoIdentity.exchange_amount(FinanceAmount.from_atoms(usd, BigInt.one())))
+    let fee = CryptoTest.expect(CryptoFee.make(CryptoFee.ServiceFee, fq, pay, expense))
+    let ctx = CryptoTest.expect(CryptoEvent.context("trade", CryptoTest.exchange_ref(), "import", 100, 101))
+    let e = CryptoTest.expect(CryptoEvent.trade(ctx, buy, sell, receive, pay, bc, sc, Some(fee)))
+    let l = CryptoTest.expect(LedgerJournal.new([receive, pay, bc, sc, expense]))
+    let (posted, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(e)))
+    assert (atoms(posted, "token") == "2")
+    assert (atoms(posted, "token-clearing") == "-2")
+    assert (atoms(posted, "usd") == "-601")
+    assert (atoms(posted, "usd-clearing") == "600")
+    assert (atoms(posted, "fees") == "1")
+    assert (Result.is_err(CryptoEvent.trade(ctx, buy, buy, receive, receive, bc, bc, None)))
+    assert (match CryptoEvent.trade(ctx, buy, sell, receive, pay, receive, sc, None) do
+      Err(CryptoError.AccountAlias) -> true
+      _ -> false
+    end)
+  end
+end

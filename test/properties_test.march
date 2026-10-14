@@ -1,0 +1,71 @@
+mod CryptoPropertiesTest do
+  needs IO.Clock, IO.Process
+
+  test "generated withdrawal and gas conserve exact gross amounts and reverse" do
+    Check.all(Gen.tuple2(Gen.int(1, 1000000), Gen.int(1, 1000)), fn values ->
+      let (n, f) = values
+      let a = CryptoTest.native()
+      let (wallet, other, expense, l) = CryptoEventTest.setup(CryptoIdentity.core_asset(a))
+      let fee = CryptoTest.expect(CryptoFee.make(CryptoFee.Gas, CryptoTest.amount(a, f), wallet, expense))
+      let event = CryptoTest.expect(CryptoEvent.withdrawal(CryptoEventTest.context("entry", "0"), CryptoTest.amount(a, n), wallet, other, Some(fee)))
+      let (posted, p) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(event)))
+      let m = CryptoTest.expect(FinanceMetadata.make("undo", 102, 102, None))
+      let (reversed, _) = CryptoTest.expect(LedgerJournal.reverse(posted, p, "undo", m))
+      CryptoEventTest.atoms(posted, "wallet") == int_to_string(0 - n - f) &&
+        CryptoEventTest.atoms(posted, "other") == int_to_string(n) &&
+        CryptoEventTest.atoms(posted, "fees") == int_to_string(f) &&
+        List.all(["wallet", "other", "fees"], fn id -> CryptoEventTest.atoms(reversed, id) == "0"))
+  end
+
+  test "generated token transfers never net native gas against token principal" do
+    Check.all(Gen.tuple2(Gen.int(1, 1000000), Gen.int(1, 1000)), fn values ->
+      let (n, f) = values
+      let token = CryptoTest.token()
+      let native = CryptoTest.native()
+      let sender = CryptoTest.account("sender", LedgerAccount.AssetAccount, CryptoIdentity.core_asset(token))
+      let receiver = CryptoTest.account("receiver", LedgerAccount.AssetAccount, CryptoIdentity.core_asset(token))
+      let funding = CryptoTest.account("funding", LedgerAccount.AssetAccount, CryptoIdentity.core_asset(native))
+      let expense = CryptoTest.account("expense", LedgerAccount.ExpenseAccount, CryptoIdentity.core_asset(native))
+      let l = CryptoTest.expect(LedgerJournal.new([sender, receiver, funding, expense]))
+      let fee = CryptoTest.expect(CryptoFee.make(CryptoFee.Gas, CryptoTest.amount(native, f), funding, expense))
+      let e = CryptoTest.expect(CryptoEvent.transfer(CryptoEventTest.context("entry", "0"), CryptoTest.amount(token, n), sender, receiver, Some(fee)))
+      let (posted, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(e)))
+      CryptoEventTest.atoms(posted, "sender") == int_to_string(0 - n) &&
+        CryptoEventTest.atoms(posted, "receiver") == int_to_string(n) &&
+        CryptoEventTest.atoms(posted, "funding") == int_to_string(0 - f) &&
+        CryptoEventTest.atoms(posted, "expense") == int_to_string(f))
+  end
+
+  test "generated exchange trades balance independent token and fiat legs" do
+    Check.all(Gen.tuple2(Gen.int(1, 1000000), Gen.int(1, 1000000)), fn values ->
+      let (n, paid) = values
+      let buy = CryptoTest.amount(CryptoTest.token(), n)
+      let usd = CryptoTest.expect(FinanceAsset.fiat("USD", 2))
+      let sell = CryptoTest.expect(CryptoIdentity.exchange_amount(FinanceAmount.from_atoms(usd, BigInt.from_int(paid))))
+      let receive = CryptoTest.account("receive", LedgerAccount.AssetAccount, FinanceAmount.quantity_asset(CryptoIdentity.quantity(buy)))
+      let pay = CryptoTest.account("pay", LedgerAccount.AssetAccount, usd)
+      let bc = CryptoTest.account("bc", LedgerAccount.EquityAccount, LedgerAccount.asset(receive))
+      let sc = CryptoTest.account("sc", LedgerAccount.EquityAccount, usd)
+      let ctx = CryptoTest.expect(CryptoEvent.context("trade", CryptoTest.exchange_ref(), "import", 100, 101))
+      let e = CryptoTest.expect(CryptoEvent.trade(ctx, buy, sell, receive, pay, bc, sc, None))
+      let l = CryptoTest.expect(LedgerJournal.new([receive, pay, bc, sc]))
+      let (posted, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(e)))
+      CryptoEventTest.atoms(posted, "receive") == int_to_string(n) &&
+        CryptoEventTest.atoms(posted, "bc") == int_to_string(0 - n) &&
+        CryptoEventTest.atoms(posted, "pay") == int_to_string(0 - paid) &&
+        CryptoEventTest.atoms(posted, "sc") == int_to_string(paid))
+  end
+
+  test "generated retries with a new draft ID return the original financial event" do
+    Check.all(Gen.int(1, 1000000), fn n ->
+      let a = CryptoTest.native()
+      let (wallet, other, _, l) = CryptoEventTest.setup(CryptoIdentity.core_asset(a))
+      let q = CryptoTest.amount(a, n)
+      let e = CryptoTest.expect(CryptoEvent.transfer(CryptoEventTest.context("first", "0"), q, wallet, other, None))
+      let retry = CryptoTest.expect(CryptoEvent.transfer(CryptoEventTest.context("retry", "0"), q, wallet, other, None))
+      let (posted, _) = CryptoTest.expect(LedgerJournal.post(l, CryptoEvent.draft(e)))
+      let (same, p) = CryptoTest.expect(LedgerJournal.post(posted, CryptoEvent.draft(retry)))
+      LedgerJournal.count(same) == 1 && LedgerJournal.entry_id(p) == "first" &&
+        CryptoEventTest.atoms(same, "wallet") == int_to_string(0 - n))
+  end
+end

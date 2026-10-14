@@ -1,0 +1,81 @@
+mod CryptoEvent do
+  type EventKind = Transfer | Deposit | Withdrawal | Trade | FeeOnly
+  derive Eq for EventKind
+  opaque type Context = ContextValue(String, CryptoReference.Reference, FinanceMetadata.Metadata)
+  opaque type Event = EventValue(EventKind, CryptoReference.Reference, FinanceMetadata.Metadata, LedgerEntry.Draft)
+
+  fn context(id : String, ref : CryptoReference.Reference, source : String, effective : Int, recorded : Int) : Result(Context, CryptoError.Error) do
+    if !CryptoIdentity.valid_id(id) do Err(CryptoError.InvalidId) else
+      let? m = CryptoReference.metadata(ref, source, effective, recorded)
+      Ok(ContextValue(id, ref, m))
+    end
+  end
+  pfn context_reference(c : Context) : CryptoReference.Reference do match c do ContextValue(_, r, _) -> r end end
+  fn kind(e : Event) : EventKind do match e do EventValue(k, _, _, _) -> k end end
+  fn reference(e : Event) : CryptoReference.Reference do match e do EventValue(_, r, _, _) -> r end end
+  fn metadata(e : Event) : FinanceMetadata.Metadata do match e do EventValue(_, _, m, _) -> m end end
+  fn draft(e : Event) : LedgerEntry.Draft do match e do EventValue(_, _, _, d) -> d end end
+
+  pfn finish(c : Context, kind : EventKind, accounts : List(LedgerAccount.Account), ps : List(LedgerEntry.Posting), fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
+    match c do ContextValue(id, ref, meta) ->
+      let? fees = match fee do
+        None -> Ok(Nil)
+        Some(f) ->
+          let? _ = CryptoFee.check_reference(f, ref)
+          CryptoFee.postings(f)
+      end
+      let all_accounts = match fee do
+        None -> accounts
+        Some(f) -> List.append(accounts, CryptoFee.accounts(f))
+      end
+      let? _ = CryptoFee.check_accounts(all_accounts)
+      let? d = Result.map_err(LedgerEntry.draft(id, meta), fn e -> CryptoError.Ledger(e))
+      let populated = List.fold_left(List.append(ps, fees), d, LedgerEntry.add)
+      Ok(EventValue(kind, ref, meta, populated))
+    end
+  end
+  pfn pair(c : Context, amount : CryptoIdentity.Amount, source : LedgerAccount.Account, destination : LedgerAccount.Account) : Result(List(LedgerEntry.Posting), CryptoError.Error) do
+    if LedgerAccount.id(source) == LedgerAccount.id(destination) do Err(CryptoError.AccountAlias)
+    else if !CryptoFee.matches_amount(source, amount) || !CryptoFee.matches_amount(destination, amount) do Err(CryptoError.AssetMismatch)
+    else
+      let? _ = CryptoFee.check_amount_reference(amount, context_reference(c))
+      let q = CryptoIdentity.quantity(amount)
+      let? debit = Result.map_err(LedgerEntry.posting(LedgerAccount.id(destination), LedgerEntry.Debit, q), fn e -> CryptoError.Ledger(e))
+      let? credit = Result.map_err(LedgerEntry.posting(LedgerAccount.id(source), LedgerEntry.Credit, q), fn e -> CryptoError.Ledger(e))
+      Ok([debit, credit])
+    end end
+  end
+
+  fn transfer(c : Context, amount : CryptoIdentity.Amount, source : LedgerAccount.Account, destination : LedgerAccount.Account, fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
+    if !CryptoFee.is_custody(source) || !CryptoFee.is_custody(destination) do Err(CryptoError.InvalidAccountRole) else
+      let? ps = pair(c, amount, source, destination)
+      finish(c, Transfer, [source, destination], ps, fee)
+    end
+  end
+  fn deposit(c : Context, amount : CryptoIdentity.Amount, counterparty : LedgerAccount.Account, custody : LedgerAccount.Account, fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
+    if !CryptoFee.is_custody(custody) do Err(CryptoError.InvalidAccountRole) else
+      let? ps = pair(c, amount, counterparty, custody)
+      finish(c, Deposit, [counterparty, custody], ps, fee)
+    end
+  end
+  fn withdrawal(c : Context, amount : CryptoIdentity.Amount, custody : LedgerAccount.Account, counterparty : LedgerAccount.Account, fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
+    if !CryptoFee.is_custody(custody) do Err(CryptoError.InvalidAccountRole) else
+      let? ps = pair(c, amount, custody, counterparty)
+      finish(c, Withdrawal, [custody, counterparty], ps, fee)
+    end
+  end
+  doc "Four gross trade legs plus optional separate fee legs; no implicit valuation."
+  fn trade(c : Context, buy : CryptoIdentity.Amount, sell : CryptoIdentity.Amount, receive : LedgerAccount.Account, pay : LedgerAccount.Account, buy_clearing : LedgerAccount.Account, sell_clearing : LedgerAccount.Account, fee : Option(CryptoFee.Fee)) : Result(Event, CryptoError.Error) do
+    if !CryptoFee.is_custody(receive) || !CryptoFee.is_custody(pay) do Err(CryptoError.InvalidAccountRole)
+    else if LedgerAccount.same_asset(FinanceAmount.quantity_asset(CryptoIdentity.quantity(buy)), FinanceAmount.quantity_asset(CryptoIdentity.quantity(sell))) do Err(CryptoError.AssetMismatch)
+    else
+      let? bought = pair(c, buy, buy_clearing, receive)
+      let? sold = pair(c, sell, pay, sell_clearing)
+      finish(c, Trade, [receive, pay, buy_clearing, sell_clearing], List.append(bought, sold), fee)
+    end end
+  end
+  doc "Fee-only adjustment or failed transaction; emits no principal legs."
+  fn fee_only(c : Context, fee : CryptoFee.Fee) : Result(Event, CryptoError.Error) do
+    finish(c, FeeOnly, Nil, Nil, Some(fee))
+  end
+end

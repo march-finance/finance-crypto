@@ -46,11 +46,22 @@ jobs:
         run: brew install blake3 zstd brotli openssl@3 pkg-config z3 ripgrep
       - name: Install March 0.5.0
         run: |
+          # Direct release URLs avoid shared-runner API limits. BSD sha256sum
+          # lacks --ignore-missing, so verify the single archive with shasum.
+          base=https://github.com/march-language/march/releases/download/v0.5.0
+          archive=march-v0.5.0-darwin-arm64.tar.gz
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location --retry 3 "$base/$archive" --output "$archive"
           curl --fail --silent --show-error --location --retry 3 \
-            https://github.com/march-language/march/releases/download/v0.5.0/install.sh \
-            --output "$RUNNER_TEMP/install-march.sh"
-          MARCH_VERSION=v0.5.0 sh "$RUNNER_TEMP/install-march.sh"
-          echo "$HOME/.march/bin" >> "$GITHUB_PATH"
+            "$base/march-v0.5.0-checksums.txt" --output march-checksums.txt
+          sed 's/^sha256://' march-checksums.txt | \
+            awk -v archive="$archive" '$2 == archive { print }' > march-checksum.txt
+          test "$(wc -l < march-checksum.txt | tr -d ' ')" -eq 1
+          shasum -a 256 --check march-checksum.txt
+          mkdir -p "$HOME/.march/versions/v0.5.0"
+          tar -xzf "$archive" --strip-components=1 -C "$HOME/.march/versions/v0.5.0"
+          ln -sfn versions/v0.5.0 "$HOME/.march/current"
+          echo "$HOME/.march/versions/v0.5.0/bin" >> "$GITHUB_PATH"
       - name: Verify pinned toolchain
         run: |
           march --version

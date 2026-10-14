@@ -3,6 +3,7 @@ name = "finance-crypto"
 version = "0.1.0"
 type = "lib"
 description = "Exact chain-neutral crypto event accounting for March"
+license = "MIT"
 
 [deps]
 finance-core = { path = "../finance-core" }

@@ -1,0 +1,69 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    defaults:
+      run:
+        working-directory: finance-crypto
+    steps:
+      - name: Check out this library
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: finance-crypto
+          persist-credentials: false
+      - name: Check out finance-core
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: march-finance/finance-core
+          ref: main
+          path: finance-core
+          persist-credentials: false
+      - name: Check out finance-ledger
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: march-finance/finance-ledger
+          ref: main
+          path: finance-ledger
+          persist-credentials: false
+      - name: Install native build dependencies and refinement solver
+        run: brew install blake3 zstd brotli openssl@3 pkg-config z3 ripgrep
+      - name: Install March 0.5.0
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/march-language/march/releases/download/v0.5.0/install.sh \
+            --output "$RUNNER_TEMP/install-march.sh"
+          MARCH_VERSION=v0.5.0 sh "$RUNNER_TEMP/install-march.sh"
+          echo "$HOME/.march/bin" >> "$GITHUB_PATH"
+      - name: Verify pinned toolchain
+        run: |
+          march --version
+          forge --version
+          forge toolchain which
+          test "$(march --version)" = "march 0.5.0"
+      - name: Check and build
+        run: |
+          forge check
+          forge build --release
+      - name: Debug tests and properties
+        run: forge test --seed=42
+      - name: Release tests and properties
+        run: forge test --release --seed=20261014
+      - name: Compile-time contract checks
+        run: sh scripts/check-contracts.sh

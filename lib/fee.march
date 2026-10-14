@@ -1,0 +1,73 @@
+mod CryptoFee do
+  type Kind = ServiceFee | Gas
+  derive Eq for Kind
+  opaque type Fee = FeeValue(Kind, CryptoIdentity.Amount, LedgerAccount.Account, LedgerAccount.Account)
+
+  fn is_custody(a : LedgerAccount.Account) : Bool do
+    match LedgerAccount.kind(a) do
+      LedgerAccount.AssetAccount -> true
+      _ -> false
+    end
+  end
+  pfn is_expense(a : LedgerAccount.Account) : Bool do
+    match LedgerAccount.kind(a) do
+      LedgerAccount.ExpenseAccount -> true
+      _ -> false
+    end
+  end
+  fn matches_amount(a : LedgerAccount.Account, amount : CryptoIdentity.Amount) : Bool do
+    LedgerAccount.same_asset(LedgerAccount.asset(a), FinanceAmount.quantity_asset(CryptoIdentity.quantity(amount)))
+  end
+  pfn kind_code(a : LedgerAccount.Account) : Int do
+    match LedgerAccount.kind(a) do
+      LedgerAccount.AssetAccount -> 0
+      LedgerAccount.LiabilityAccount -> 1
+      LedgerAccount.EquityAccount -> 2
+      LedgerAccount.IncomeAccount -> 3
+      LedgerAccount.ExpenseAccount -> 4
+    end
+  end
+  doc "Repeated IDs must refer to identical account definitions."
+  fn check_accounts(accounts : List(LedgerAccount.Account)) : Result(Unit, CryptoError.Error) do
+    let valid = List.all(accounts, fn a -> List.all(accounts, fn b ->
+      LedgerAccount.id(a) != LedgerAccount.id(b) ||
+        (kind_code(a) == kind_code(b) && LedgerAccount.same_asset(LedgerAccount.asset(a), LedgerAccount.asset(b)))))
+    if valid do Ok(()) else Err(CryptoError.ConflictingAccount) end
+  end
+  fn make(kind : Kind, amount : CryptoIdentity.Amount, funding : LedgerAccount.Account, expense : LedgerAccount.Account) : Result(Fee, CryptoError.Error) do
+    if LedgerAccount.id(funding) == LedgerAccount.id(expense) do Err(CryptoError.AccountAlias)
+    else if !is_custody(funding) || !is_expense(expense) do Err(CryptoError.InvalidAccountRole)
+    else if !matches_amount(funding, amount) || !matches_amount(expense, amount) do Err(CryptoError.AssetMismatch)
+    else
+      let valid_gas = match CryptoIdentity.descriptor(amount) do
+        Some(a) -> CryptoIdentity.asset_kind(a) == CryptoIdentity.Native
+        None -> false
+      end
+      if kind == Gas && !valid_gas do Err(CryptoError.InvalidGasAsset)
+      else Ok(FeeValue(kind, amount, funding, expense)) end
+    end end end
+  end
+  fn kind(f : Fee) : Kind do match f do FeeValue(k, _, _, _) -> k end end
+  fn amount(f : Fee) : CryptoIdentity.Amount do match f do FeeValue(_, a, _, _) -> a end end
+  fn accounts(f : Fee) : List(LedgerAccount.Account) do match f do FeeValue(_, _, funding, expense) -> [funding, expense] end end
+  fn postings(f : Fee) : Result(List(LedgerEntry.Posting), CryptoError.Error) do
+    match f do FeeValue(_, a, funding, expense) ->
+      let? debit = Result.map_err(LedgerEntry.posting(LedgerAccount.id(expense), LedgerEntry.Debit, CryptoIdentity.quantity(a)), fn e -> CryptoError.Ledger(e))
+      let? credit = Result.map_err(LedgerEntry.posting(LedgerAccount.id(funding), LedgerEntry.Credit, CryptoIdentity.quantity(a)), fn e -> CryptoError.Ledger(e))
+      Ok([debit, credit])
+    end
+  end
+  fn check_amount_reference(a : CryptoIdentity.Amount, r : CryptoReference.Reference) : Result(Unit, CryptoError.Error) do
+    match CryptoReference.network(r) do
+      None -> Ok(())
+      Some(n) -> match CryptoIdentity.descriptor(a) do
+        None -> Err(CryptoError.NetworkMismatch)
+        Some(asset) -> if CryptoIdentity.same_network(n, CryptoIdentity.asset_network(asset)) do Ok(()) else Err(CryptoError.NetworkMismatch) end
+      end
+    end
+  end
+  fn check_reference(f : Fee, r : CryptoReference.Reference) : Result(Unit, CryptoError.Error) do
+    if kind(f) == Gas && Option.is_none(CryptoReference.network(r)) do Err(CryptoError.InvalidGasAsset)
+    else check_amount_reference(amount(f), r) end
+  end
+end

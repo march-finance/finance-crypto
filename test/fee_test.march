@@ -1,0 +1,72 @@
+mod CryptoFeeTest do
+  test "gas emits a literal expense debit and wallet credit" do
+    let a = CryptoTest.native()
+    let asset = CryptoIdentity.core_asset(a)
+    let wallet = CryptoTest.account("wallet", LedgerAccount.AssetAccount, asset)
+    let expense = CryptoTest.account("gas", LedgerAccount.ExpenseAccount, asset)
+    let f = CryptoTest.expect(CryptoFee.make(CryptoFee.Gas, CryptoTest.amount(a, 1), wallet, expense))
+    let ps = CryptoTest.expect(CryptoFee.postings(f))
+    assert (List.length(ps) == 2)
+    let (debit, credit) = match ps do
+      Cons(d, Cons(c, Nil)) -> (d, c)
+      _ -> panic("expected exactly two fee postings")
+    end
+    assert (LedgerEntry.account(debit) == "gas")
+    assert (LedgerEntry.direction(debit) == LedgerEntry.Debit)
+    assert (BigInt.to_string(LedgerEntry.signed_atoms(debit)) == "1")
+    assert (LedgerEntry.account(credit) == "wallet")
+    assert (BigInt.to_string(LedgerEntry.signed_atoms(credit)) == "-1")
+    assert (Result.is_ok(CryptoFee.check_reference(f, CryptoTest.chain_ref("0"))))
+    assert (match CryptoFee.check_reference(f, CryptoTest.exchange_ref()) do
+      Err(CryptoError.InvalidGasAsset) -> true
+      _ -> false
+    end)
+    let other = CryptoTest.expect(CryptoIdentity.network("test", "2"))
+    let ref = CryptoTest.expect(CryptoReference.on_chain(other, "tx", "0"))
+    assert (match CryptoFee.check_reference(f, ref) do
+      Err(CryptoError.NetworkMismatch) -> true
+      _ -> false
+    end)
+  end
+  test "fee constructors reject roles aliases mismatches and token gas" do
+    let a = CryptoTest.token()
+    let asset = CryptoIdentity.core_asset(a)
+    let wallet = CryptoTest.account("wallet", LedgerAccount.AssetAccount, asset)
+    let expense = CryptoTest.account("fees", LedgerAccount.ExpenseAccount, asset)
+    let qty = CryptoTest.amount(a, 1)
+    assert (match CryptoFee.make(CryptoFee.Gas, qty, wallet, expense) do
+      Err(CryptoError.InvalidGasAsset) -> true
+      _ -> false
+    end)
+    assert (Result.is_ok(CryptoFee.make(CryptoFee.ServiceFee, qty, wallet, expense)))
+    assert (match CryptoFee.make(CryptoFee.ServiceFee, qty, expense, wallet) do
+      Err(CryptoError.InvalidAccountRole) -> true
+      _ -> false
+    end)
+    let same_id = CryptoTest.account("wallet", LedgerAccount.ExpenseAccount, asset)
+    assert (match CryptoFee.make(CryptoFee.ServiceFee, qty, wallet, same_id) do
+      Err(CryptoError.AccountAlias) -> true
+      _ -> false
+    end)
+    let wrong = CryptoTest.account("wrong", LedgerAccount.ExpenseAccount, CryptoIdentity.core_asset(CryptoTest.native()))
+    assert (match CryptoFee.make(CryptoFee.ServiceFee, qty, wallet, wrong) do
+      Err(CryptoError.AssetMismatch) -> true
+      _ -> false
+    end)
+    let raw = CryptoTest.expect(CryptoIdentity.exchange_amount(CryptoIdentity.quantity(qty)))
+    assert (Result.is_err(CryptoFee.make(CryptoFee.Gas, raw, wallet, expense)))
+    let fee = CryptoTest.expect(CryptoFee.make(CryptoFee.ServiceFee, raw, wallet, expense))
+    assert (Result.is_err(CryptoFee.check_reference(fee, CryptoTest.chain_ref("0"))))
+    assert (Result.is_ok(CryptoFee.check_reference(fee, CryptoTest.exchange_ref())))
+  end
+  test "repeated account IDs must have consistent definitions" do
+    let asset = CryptoIdentity.core_asset(CryptoTest.native())
+    let a = CryptoTest.account("wallet", LedgerAccount.AssetAccount, asset)
+    let b = CryptoTest.account("wallet", LedgerAccount.LiabilityAccount, asset)
+    assert (Result.is_ok(CryptoFee.check_accounts([a, a])))
+    assert (match CryptoFee.check_accounts([a, b]) do
+      Err(CryptoError.ConflictingAccount) -> true
+      _ -> false
+    end)
+  end
+end

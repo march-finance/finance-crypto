@@ -1,0 +1,19 @@
+mod CryptoTest do
+  fn expect(value : Result(a, e)) : a do
+    match value do
+      Ok(v) -> v
+      Err(_) -> panic("unexpected crypto test error")
+    end
+  end
+  fn network() do expect(CryptoIdentity.network("test", "1")) end
+  fn native() do expect(CryptoIdentity.native(network(), 0)) end
+  fn token() do expect(CryptoIdentity.token(network(), "token", 0)) end
+  fn amount(a : CryptoIdentity.Asset, n : Int) do
+    expect(CryptoIdentity.amount(a, FinanceAmount.from_atoms(CryptoIdentity.core_asset(a), BigInt.from_int(n))))
+  end
+  fn account(id : String, kind : LedgerAccount.Kind, asset : FinanceAsset.Asset) do
+    expect(LedgerAccount.make(id, kind, asset))
+  end
+  fn chain_ref(id : String) do expect(CryptoReference.on_chain(network(), "tx", id)) end
+  fn exchange_ref() do expect(CryptoReference.exchange("venue", "account", "fill")) end
+end
